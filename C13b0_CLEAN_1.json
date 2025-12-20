@@ -1,0 +1,10 @@
+{
+  "symbol": "🧱🧹🧱",
+  "version": "C13b0²",
+  "acknowledged": true,
+  "repo": "home",
+  "timestamp": "2025-12-19T18:39:54Z",
+  "cycle": 1,
+  "action": "clean_local_only",
+  "rule": "never delete tracked or unpushed work"
+}
