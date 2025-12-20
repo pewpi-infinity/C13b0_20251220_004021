@@ -1,0 +1,74 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -u
+
+echo "===== C13b0 DIAGNOSTIC (FIXED) ====="
+echo "HOME=$HOME"
+echo
+
+# 1. Locate mongoose.os
+echo "[1] Searching for mongoose.os …"
+BRAIN_GIT=$(find "$HOME" -type d -name ".git" 2>/dev/null | grep "/mongoose\.os/\.git" | head -n 1 || true)
+
+if [ -z "$BRAIN_GIT" ]; then
+  echo "❌ mongoose.os NOT FOUND"
+  exit 1
+fi
+
+BRAIN_REPO="$(dirname "$BRAIN_GIT")"
+REPOS_ROOT="$(dirname "$BRAIN_REPO")"
+
+echo "✓ mongoose.os at:"
+echo "  $BRAIN_REPO"
+echo "Repos root:"
+echo "  $REPOS_ROOT"
+echo
+
+# 2. List repos
+echo "[2] Git repos:"
+REPOS=()
+for d in "$REPOS_ROOT"/*; do
+  if [ -d "$d/.git" ]; then
+    echo "  ✓ $(basename "$d")"
+    REPOS+=("$d")
+  fi
+done
+
+echo
+
+# 3. Find carts (FIXED)
+echo "[3] Searching for carts…"
+CARTS=()
+for r in "${REPOS[@]}"; do
+  while IFS= read -r c; do
+    echo "  ✓ $(basename "$c")  (repo: $(basename "$r"))"
+    CARTS+=("$c")
+  done < <(find "$r" -type f \( -name "cart*.sh" -o -name "cart*.py" \) 2>/dev/null)
+done
+
+if [ "${#CARTS[@]}" -eq 0 ]; then
+  echo "❌ NO carts found (this should NOT happen now)"
+  exit 1
+fi
+
+echo
+
+# 4. Run first cart
+CART="${CARTS[0]}"
+REPO="$(dirname "$CART")"
+
+echo "[4] Running cart:"
+echo "  $CART"
+echo
+
+cd "$REPO" || exit 1
+chmod +x "$CART" 2>/dev/null || true
+
+echo "---- CART OUTPUT ----"
+case "$CART" in
+  *.sh) bash "$CART" ;;
+  *.py) python "$CART" ;;
+esac
+echo "---- END OUTPUT ----"
+
+echo
+echo "===== DIAGNOSTIC COMPLETE ====="

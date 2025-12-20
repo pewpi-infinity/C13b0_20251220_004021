@@ -1,0 +1,115 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+
+# ==================================================
+# C13b0² — AUTO-BOOT (WIRED TO REAL REPO STRUCTURE)
+# ==================================================
+# ROOT:  ~/pewpi-infinity/repos
+# BRAIN: mongoose.os
+# Insert → auto-run → stays alive
+# ==================================================
+
+REPO_ROOT="$HOME/pewpi-infinity/repos"
+BRAIN_REPO="$REPO_ROOT/mongoose.os"
+STATE="$HOME/.c13b0_state"
+LOGS="$HOME/.c13b0_logs"
+DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+mkdir -p "$STATE" "$LOGS"
+
+# ---- silent deps (idempotent) ----
+pkg install -y git coreutils findutils python >/dev/null 2>&1 || true
+
+clear
+echo "∞ C13b0² BOOT [$DATE]"
+echo "REPO ROOT = $REPO_ROOT"
+echo "BRAIN     = mongoose.os"
+echo "--------------------------------"
+
+# ---- wait for repo root to exist ----
+while [[ ! -d "$REPO_ROOT" ]]; do
+  echo "[WAIT] repos folder not present yet"
+  sleep 2
+done
+
+# ---- wait for mongoose brain ----
+while [[ ! -d "$BRAIN_REPO/.git" ]]; do
+  echo "[WAIT] mongoose.os brain not ready"
+  sleep 2
+done
+
+# ---- discover ALL repos (one level deep, correct for your layout) ----
+REPOS=()
+for d in "$REPO_ROOT"/*; do
+  [[ -d "$d/.git" ]] && REPOS+=("$d")
+done
+
+# ---- stay alive if empty (never exit) ----
+while [[ "${#REPOS[@]}" -eq 0 ]]; do
+  echo "[WAIT] no repos detected yet"
+  sleep 2
+  REPOS=()
+  for d in "$REPO_ROOT"/*; do
+    [[ -d "$d/.git" ]] && REPOS+=("$d")
+  done
+done
+
+# ---- build cart list (shared API via mongoose) ----
+CARTS=()
+for r in "${REPOS[@]}"; do
+  while IFS= read -r c; do
+    CARTS+=("$r|$c")
+  done < <(find "$r" -type f \( -name "cart*.sh" -o -name "cart*.py" \) 2>/dev/null || true)
+done
+
+# ---- keep running forever ----
+while true; do
+  clear
+  echo "∞ C13b0² ACTIVE — CART SELECTOR"
+  echo "BRAIN: mongoose.os"
+  echo "--------------------------------"
+  i=1
+  for item in "${CARTS[@]}"; do
+    repo="${item%%|*}"
+    cart="${item#*|}"
+    printf "[%3d] %s (%s)\n" "$i" "$(basename "$cart")" "$(basename "$repo")"
+    i=$((i+1))
+  done
+  echo
+  echo "[  0] Exit"
+  read -p "Choice: " CH
+
+  [[ "$CH" == "0" ]] && exit 0
+  [[ "$CH" =~ ^[0-9]+$ ]] || continue
+  ((CH>=1 && CH<=${#CARTS[@]})) || continue
+
+  SEL="${CARTS[$((CH-1))]}"
+  REPO="${SEL%%|*}"
+  CART="${SEL#*|}"
+  NAME="$(basename "$REPO")"
+
+  echo
+  echo "▶ RUN $CART"
+  cd "$REPO"
+
+  rm -f .git/index.lock 2>/dev/null || true
+  chmod +x "$CART" 2>/dev/null || true
+
+  # ---- run cart ----
+  case "$CART" in
+    *.sh) "$CART" >> "$LOGS/$NAME.log" 2>&1 || true ;;
+    *.py) python "$CART" >> "$LOGS/$NAME.log" 2>&1 || true ;;
+  esac
+
+  # ---- commit + push (every run) ----
+  git add -A
+  if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
+    git commit -m "∞ C13b0² initial [$DATE]" >/dev/null 2>&1 || true
+  elif [[ -n "$(git status --porcelain)" ]]; then
+    git commit -m "∞ C13b0² update [$DATE]" >/dev/null 2>&1 || true
+  fi
+
+  git push origin HEAD >/dev/null 2>&1 || true
+
+  read -p "Press ENTER to continue..."
+done

@@ -1,0 +1,174 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+
+# ============================================================
+# C13b0² MONOLITH — THE WHOLE COMPUTER IN ONE CARTRIDGE
+# ============================================================
+# ONE FILE
+# ONE PASTE
+# AUTO-BOOT
+# AUTO-WIRE
+# AUTO-CHAIN
+# ============================================================
+
+DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+HOME_ROOT="$HOME"
+
+STATE="$HOME/.c13b0_state"
+LOGS="$HOME/.c13b0_logs"
+BUS="$HOME/.c13b0_bus"
+
+mkdir -p "$STATE" "$LOGS" "$BUS"
+
+# ---------- deps (silent, idempotent) ----------
+pkg install -y git coreutils findutils python jq >/dev/null 2>&1 || true
+
+clear
+echo "∞ C13b0² MONOLITH BOOT [$DATE]"
+echo "--------------------------------"
+
+# ============================================================
+# 1. LOCATE MONGOOSE.OS (BRAIN)
+# ============================================================
+echo "[SCAN] locating mongoose.os brain…"
+
+while true; do
+  BRAIN_GIT="$(find "$HOME_ROOT" -type d -name ".git" 2>/dev/null | grep "/mongoose\.os/\.git" | head -n 1 || true)"
+  [[ -n "$BRAIN_GIT" ]] && break
+  echo "[WAIT] mongoose.os not found yet"
+  sleep 2
+done
+
+BRAIN_REPO="$(dirname "$BRAIN_GIT")"
+REPOS_ROOT="$(dirname "$BRAIN_REPO")"
+
+echo "BRAIN      = $BRAIN_REPO"
+echo "REPOS ROOT = $REPOS_ROOT"
+echo "--------------------------------"
+
+# ============================================================
+# 2. WRITE SYSTEM INTENT (POSITION ONE 🧱)
+# ============================================================
+cat > "$BUS/intent.json" <<I
+{
+  "intent": "connect_discover_chain_execute",
+  "brain": "$BRAIN_REPO",
+  "repos_root": "$REPOS_ROOT",
+  "booted": "$DATE"
+}
+I
+
+# shared mutable state
+[[ -f "$BUS/state.json" ]] || cat > "$BUS/state.json" <<S
+{
+  "initialized": "$DATE",
+  "runs": []
+}
+S
+
+# ============================================================
+# 3. DISCOVER REPOS (SIBLINGS OF MONGOOSE)
+# ============================================================
+discover_repos() {
+  REPOS=()
+  for d in "$REPOS_ROOT"/*; do
+    [[ -d "$d/.git" ]] && REPOS+=("$d")
+  done
+}
+
+# ============================================================
+# 4. DISCOVER CARTS
+# ============================================================
+discover_carts() {
+  CARTS=()
+  for r in "${REPOS[@]}"; do
+    while IFS= read -r c; do
+      CARTS+=("$r|$c")
+    done < <(find "$r" -type f \( -name "cart*.sh" -o -name "cart*.py" \) 2>/dev/null || true)
+  done
+}
+
+# ============================================================
+# 5. RUN CART WITH CONTEXT + CHAINING
+# ============================================================
+run_cart() {
+  local repo="$1"
+  local cart="$2"
+  local name
+  name="$(basename "$repo")"
+
+  cat > "$BUS/run.json" <<R
+{
+  "cart": "$(basename "$cart")",
+  "repo": "$repo",
+  "started": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+}
+R
+
+  cd "$repo"
+  rm -f .git/index.lock 2>/dev/null || true
+  chmod +x "$cart" 2>/dev/null || true
+
+  echo "▶ EXEC $cart"
+
+  case "$cart" in
+    *.sh) "$cart" >> "$LOGS/$name.log" 2>&1 || true ;;
+    *.py) python "$cart" >> "$LOGS/$name.log" 2>&1 || true ;;
+  esac
+
+  # commit + push
+  git add -A
+  if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
+    git commit -m "∞ C13b0² initial [$DATE]" >/dev/null 2>&1 || true
+  elif [[ -n "$(git status --porcelain)" ]]; then
+    git commit -m "∞ C13b0² update [$DATE]" >/dev/null 2>&1 || true
+  fi
+  git push origin HEAD >/dev/null 2>&1 || true
+
+  # chaining
+  if [[ -f "$BUS/emit.json" ]]; then
+    NEXT="$(jq -r '.next // empty' "$BUS/emit.json" 2>/dev/null || true)"
+    rm -f "$BUS/emit.json"
+    [[ -n "$NEXT" ]] && echo "[CHAIN] requested → $NEXT"
+  fi
+}
+
+# ============================================================
+# 6. MAIN LOOP — NEVER EXITS UNLESS YOU SAY
+# ============================================================
+while true; do
+  discover_repos
+  discover_carts
+
+  if [[ "${#CARTS[@]}" -eq 0 ]]; then
+    echo "[WAIT] no carts yet"
+    sleep 2
+    continue
+  fi
+
+  clear
+  echo "∞ C13b0² MONOLITH ACTIVE"
+  echo "BRAIN: mongoose.os"
+  echo "--------------------------------"
+
+  i=1
+  for item in "${CARTS[@]}"; do
+    repo="${item%%|*}"
+    cart="${item#*|}"
+    printf "[%3d] %s (%s)\n" "$i" "$(basename "$cart")" "$(basename "$repo")"
+    i=$((i+1))
+  done
+
+  echo
+  echo "[  0] Exit"
+  read -p "Choice: " CH
+
+  [[ "$CH" == "0" ]] && exit 0
+  [[ "$CH" =~ ^[0-9]+$ ]] || continue
+  ((CH>=1 && CH<=${#CARTS[@]})) || continue
+
+  SEL="${CARTS[$((CH-1))]}"
+  run_cart "${SEL%%|*}" "${SEL#*|}"
+
+  read -p "Press ENTER to continue…"
+done

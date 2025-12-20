@@ -1,0 +1,107 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+
+echo "∞ C13b0 SUPERVISOR BOOT (ROOT=~/o)"
+
+ROOT="$HOME/o"
+STATE="$HOME/.c13b0_state"
+BUS="$HOME/.c13b0_bus"
+LOGS="$HOME/.c13b0_logs"
+CYCLE_SECONDS=15
+PUSH_EVERY_N_CYCLES=4
+
+mkdir -p "$STATE" "$BUS" "$LOGS"
+
+# --- validate ---
+[ -d "$ROOT/mongoose.os/.git" ] || { echo "❌ mongoose.os missing under ~/o"; exit 1; }
+
+# --- helpers ---
+ts(){ date -Is; }
+log(){ echo "[$(ts)] $*" | tee -a "$LOGS/supervisor.log"; }
+
+emit(){
+  # emit EVENT TYPE PAYLOAD
+  local ev="$1"; shift
+  printf '{"ts":"%s","event":"%s","data":%s}\n' "$(ts)" "$ev" "${1:-null}" \
+    > "$BUS/$(date +%s%N)_$ev.json"
+}
+
+run_cart(){
+  local repo="$1"; local cart="$2"
+  log "RUN $(basename "$cart") @ $(basename "$repo")"
+  ( cd "$repo" && chmod +x "$cart" 2>/dev/null || true
+    case "$cart" in
+      *.sh) bash "$cart" ;;
+      *.py) python "$cart" ;;
+    esac
+  ) >> "$LOGS/$(basename "$repo").log" 2>&1 || true
+}
+
+git_push_safe(){
+  local repo="$1"
+  ( cd "$repo"
+    git status --porcelain | grep -q . || return 0
+    git add -A
+    git commit -m "c13b0:auto $(ts)" || true
+    git push || true
+  ) >> "$LOGS/git.log" 2>&1
+}
+
+# --- discover repos & carts ---
+mapfile -t REPOS < <(find "$ROOT" -maxdepth 1 -type d -exec test -d "{}/.git" \; -print)
+declare -a CARTS=()
+for r in "${REPOS[@]}"; do
+  while IFS= read -r c; do CARTS+=("$r|$c"); done \
+    < <(find "$r" -type f \( -name "cart*.sh" -o -name "cart*.py" \))
+done
+log "DISCOVERED repos=${#REPOS[@]} carts=${#CARTS[@]}"
+
+# --- background watcher (persistent calc loop replacement) ---
+if ! pgrep -f c13b0_watcher >/dev/null 2>&1; then
+  ( while true; do
+      emit heartbeat '{}'
+      sleep 10
+    done ) >/dev/null 2>&1 &
+  disown
+  log "WATCHER started (heartbeat)"
+fi
+
+# --- supervisor loop ---
+CYCLE=0
+while true; do
+  CYCLE=$((CYCLE+1))
+  log "CYCLE $CYCLE"
+
+  # 1) process events (intent wiring)
+  for ev in "$BUS"/*.json; do
+    [ -e "$ev" ] || break
+    type=$(jq -r .event "$ev" 2>/dev/null || echo "")
+    data=$(jq -c .data "$ev" 2>/dev/null || echo "{}")
+    rm -f "$ev"
+
+    case "$type" in
+      intent:run)
+        # data: {"repo":"mongoose.os","cart":"cart019_token_generation.py"}
+        repo="$ROOT/$(jq -r .repo <<<"$data")"
+        cart="$repo/$(jq -r .cart <<<"$data")"
+        [ -f "$cart" ] && run_cart "$repo" "$cart"
+        ;;
+      heartbeat)
+        : # keepalive
+        ;;
+    esac
+  done
+
+  # 2) scheduled fire (non-blocking, round-robin)
+  idx=$(( (CYCLE-1) % ${#CARTS[@]} ))
+  IFS='|' read -r repo cart <<<"${CARTS[$idx]}"
+  run_cart "$repo" "$cart"
+
+  # 3) controlled git push
+  if (( CYCLE % PUSH_EVERY_N_CYCLES == 0 )); then
+    for r in "${REPOS[@]}"; do git_push_safe "$r"; done
+    log "GIT push batch complete"
+  fi
+
+  sleep "$CYCLE_SECONDS"
+done

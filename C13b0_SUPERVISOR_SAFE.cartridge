@@ -1,0 +1,72 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+
+echo "∞ C13b0 SUPERVISOR SAFE BOOT"
+
+ROOT="$HOME/o"
+LOGS="$HOME/.c13b0_logs"
+STATE="$HOME/.c13b0_state"
+LOCK="$STATE/git.lock"
+
+CYCLE_SECONDS=20
+CART_TIMEOUT=30
+
+mkdir -p "$LOGS" "$STATE"
+
+# ---- validate ----
+[ -d "$ROOT/mongoose.os/.git" ] || { echo "❌ mongoose.os missing"; exit 1; }
+
+ts(){ date -Is; }
+log(){ echo "[$(ts)] $*" | tee -a "$LOGS/supervisor.log"; }
+
+# ---- discover repos ----
+mapfile -t REPOS < <(find "$ROOT" -maxdepth 1 -type d -exec test -d "{}/.git" \; -print)
+
+# ---- discover carts ----
+declare -a CARTS=()
+for r in "${REPOS[@]}"; do
+  while IFS= read -r c; do CARTS+=("$r|$c"); done \
+    < <(find "$r" -type f \( -name "cart*.sh" -o -name "cart*.py" \))
+done
+
+log "DISCOVERED repos=${#REPOS[@]} carts=${#CARTS[@]}"
+
+# ---- main loop ----
+CYCLE=0
+while true; do
+  CYCLE=$((CYCLE+1))
+  log "CYCLE $CYCLE"
+
+  idx=$(( (CYCLE-1) % ${#CARTS[@]} ))
+  IFS='|' read -r repo cart <<<"${CARTS[$idx]}"
+
+  log "RUN $(basename "$cart") @ $(basename "$repo")"
+
+  (
+    cd "$repo" || exit 0
+    chmod +x "$cart" 2>/dev/null || true
+    case "$cart" in
+      *.sh) timeout "$CART_TIMEOUT" bash "$cart" ;;
+      *.py) timeout "$CART_TIMEOUT" python "$cart" ;;
+    esac
+  ) >> "$LOGS/$(basename "$repo").log" 2>&1 || log "WARN cart timeout or error"
+
+  # ---- serialized git push ----
+  if [ ! -f "$LOCK" ]; then
+    touch "$LOCK"
+    (
+      cd "$repo" || exit 0
+      if git status --porcelain | grep -q .; then
+        git add -A
+        git commit -m "c13b0:safe cycle=$CYCLE cart=$(basename "$cart")" || true
+        git push || true
+        log "PUSHED $(basename "$repo")"
+      fi
+    ) >> "$LOGS/git.log" 2>&1 || true
+    rm -f "$LOCK"
+  else
+    log "SKIP git (lock active)"
+  fi
+
+  sleep "$CYCLE_SECONDS"
+done

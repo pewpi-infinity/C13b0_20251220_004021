@@ -1,0 +1,75 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+
+HOME_ROOT="$HOME"
+BUS="$HOME/.c13b0_bus"
+STATE="$HOME/.c13b0_state"
+LOGS="$HOME/.c13b0_logs"
+DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+mkdir -p "$BUS" "$STATE" "$LOGS"
+
+pkg install -y git coreutils findutils python jq >/dev/null 2>&1 || true
+
+echo "∞ C13b0² AUTORUN BOOT [$DATE]"
+
+# ---------------- FIND MONGOOSE ----------------
+while true; do
+  BRAIN_GIT="$(find "$HOME_ROOT" -type d -name ".git" 2>/dev/null | grep "/mongoose\.os/\.git" | head -n 1 || true)"
+  [[ -n "$BRAIN_GIT" ]] && break
+  sleep 2
+done
+
+BRAIN_REPO="$(dirname "$BRAIN_GIT")"
+REPOS_ROOT="$(dirname "$BRAIN_REPO")"
+
+cat > "$BUS/intent.json" <<I
+{
+  "intent": "autorun_all_carts_git_safe",
+  "brain": "$BRAIN_REPO",
+  "root": "$REPOS_ROOT",
+  "booted": "$DATE"
+}
+I
+
+# ---------------- AUTORUN LOOP ----------------
+while true; do
+
+  for REPO in "$REPOS_ROOT"/*; do
+    [[ ! -d "$REPO/.git" ]] && continue
+
+    cd "$REPO"
+
+    # ---------- GIT SAFETY GUARD ----------
+    if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      continue
+    fi
+
+    if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
+      echo "[FIX] initializing empty repo $(basename "$REPO")"
+      git add -A || true
+      git commit -m "∞ C13b0² initial commit [$DATE]" >/dev/null 2>&1 || true
+    fi
+
+    # ---------- RUN CARTS ----------
+    find . -type f \( -name "cart*.sh" -o -name "cart*.py" \) | sort | while read -r CART; do
+      NAME="$(basename "$REPO")"
+      echo "▶ RUN $(basename "$CART") [$NAME]"
+
+      chmod +x "$CART" 2>/dev/null || true
+
+      case "$CART" in
+        *.sh) "$CART" >> "$LOGS/$NAME.log" 2>&1 || true ;;
+        *.py) python "$CART" >> "$LOGS/$NAME.log" 2>&1 || true ;;
+      esac
+
+      git add -A
+      if [[ -n "$(git status --porcelain)" ]]; then
+        git commit -m "∞ C13b0² update [$DATE]" >/dev/null 2>&1 || true
+        git push origin HEAD >/dev/null 2>&1 || true
+      fi
+    done
+  done
+
+  sleep 5
+done

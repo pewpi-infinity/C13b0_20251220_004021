@@ -1,0 +1,65 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -u
+
+echo "∞ C13b0 PATH-FIXED BOOT"
+
+HOME_ROOT="$HOME"
+LOGS="$HOME/.c13b0_logs"
+mkdir -p "$LOGS"
+
+# ---- find mongoose.os ----
+BRAIN_GIT=$(find "$HOME_ROOT" -type d -name ".git" 2>/dev/null | grep "/mongoose\.os/\.git" | head -n 1 || true)
+[ -z "$BRAIN_GIT" ] && { echo "❌ mongoose.os not found"; exit 1; }
+
+BRAIN_REPO="$(dirname "$BRAIN_GIT")"
+REPOS_ROOT="$(dirname "$BRAIN_REPO")"
+
+echo "BRAIN: $BRAIN_REPO"
+echo "REPOS: $REPOS_ROOT"
+echo
+
+# ---- discover repos ----
+REPOS=()
+for d in "$REPOS_ROOT"/*; do
+  [ -d "$d/.git" ] && REPOS+=("$d")
+done
+
+# ---- discover carts with absolute paths ----
+CARTS=()
+for r in "${REPOS[@]}"; do
+  while IFS= read -r c; do
+    CARTS+=("$r|$c")
+  done < <(find "$r" -type f \( -name "cart*.sh" -o -name "cart*.py" \))
+done
+
+[ "${#CARTS[@]}" -eq 0 ] && { echo "❌ no carts found"; exit 1; }
+
+echo "✓ ${#CARTS[@]} carts discovered"
+echo
+
+# ---- run carts SAFELY ----
+for item in "${CARTS[@]}"; do
+  REPO="${item%%|*}"
+  CART="${item#*|}"
+  NAME="$(basename "$REPO")"
+
+  echo "▶ RUN $(basename "$CART")"
+  echo "  repo = $REPO"
+  echo "  file = $CART"
+
+  cd "$REPO" || { echo "❌ cannot cd to repo"; continue; }
+
+  chmod +x "$CART" 2>/dev/null || true
+
+  case "$CART" in
+    *.sh)
+      bash "$CART" >> "$LOGS/$NAME.log" 2>&1 || true
+      ;;
+    *.py)
+      python "$CART" >> "$LOGS/$NAME.log" 2>&1 || true
+      ;;
+  esac
+done
+
+echo
+echo "∞ ALL CARTS LAUNCHED (PATH-FIXED)"

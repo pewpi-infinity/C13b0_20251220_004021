@@ -1,0 +1,139 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+
+# ======================================================
+# C13b0² CONNECTOR — INTENT-WIRED AUTO-DISCOVERY
+# ======================================================
+# - Finds mongoose.os automatically
+# - Infers repos root
+# - Shared intent bus for all carts
+# - Numbered menu
+# - Commit + push on runs
+# ======================================================
+
+DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+HOME_ROOT="$HOME"
+STATE="$HOME/.c13b0_state"
+LOGS="$HOME/.c13b0_logs"
+BUS="$HOME/.c13b0_bus"
+
+mkdir -p "$STATE" "$LOGS" "$BUS"
+
+# ---- silent deps ----
+pkg install -y git coreutils findutils python >/dev/null 2>&1 || true
+
+clear
+echo "∞ C13b0² CONNECTOR BOOT [$DATE]"
+echo "--------------------------------"
+
+# ---- find mongoose.os (brain) anywhere ----
+echo "[SCAN] locating mongoose.os (brain)…"
+BRAIN_GIT="$(find "$HOME_ROOT" -type d -name ".git" 2>/dev/null | grep "/mongoose\.os/\.git" | head -n 1 || true)"
+
+while [[ -z "$BRAIN_GIT" ]]; do
+  echo "[WAIT] mongoose.os not found yet"
+  sleep 2
+  BRAIN_GIT="$(find "$HOME_ROOT" -type d -name ".git" 2>/dev/null | grep "/mongoose\.os/\.git" | head -n 1 || true)"
+done
+
+BRAIN_REPO="$(dirname "$BRAIN_GIT")"
+REPOS_ROOT="$(dirname "$BRAIN_REPO")"
+
+echo "BRAIN      = $BRAIN_REPO"
+echo "REPOS ROOT = $REPOS_ROOT"
+echo "--------------------------------"
+
+# ---- write intent token (position one 🧱) ----
+INTENT="$BUS/intent.json"
+cat > "$INTENT" <<I
+{
+  "intent": "connect_and_execute_carts",
+  "brain": "$BRAIN_REPO",
+  "repos_root": "$REPOS_ROOT",
+  "timestamp": "$DATE"
+}
+I
+
+# ---- discover all repos (siblings of mongoose.os) ----
+REPOS=()
+for d in "$REPOS_ROOT"/*; do
+  [[ -d "$d/.git" ]] && REPOS+=("$d")
+done
+
+# ---- discover all carts ----
+CARTS=()
+for r in "${REPOS[@]}"; do
+  while IFS= read -r c; do
+    CARTS+=("$r|$c")
+  done < <(find "$r" -type f \( -name "cart*.sh" -o -name "cart*.py" \) 2>/dev/null || true)
+done
+
+# ---- stay alive even if empty ----
+while [[ "${#CARTS[@]}" -eq 0 ]]; do
+  echo "[WAIT] no carts found yet"
+  sleep 2
+  CARTS=()
+  for r in "${REPOS[@]}"; do
+    while IFS= read -r c; do CARTS+=("$r|$c"); done \
+      < <(find "$r" -type f \( -name "cart*.sh" -o -name "cart*.py" \) 2>/dev/null || true)
+  done
+done
+
+# ---- menu loop ----
+while true; do
+  clear
+  echo "∞ C13b0² CONNECTED"
+  echo "BRAIN: mongoose.os"
+  echo "--------------------------------"
+  i=1
+  for item in "${CARTS[@]}"; do
+    repo="${item%%|*}"
+    cart="${item#*|}"
+    printf "[%3d] %s (%s)\n" "$i" "$(basename "$cart")" "$(basename "$repo")"
+    i=$((i+1))
+  done
+  echo
+  echo "[  0] Exit"
+  read -p "Choice: " CH
+
+  [[ "$CH" == "0" ]] && exit 0
+  [[ "$CH" =~ ^[0-9]+$ ]] || continue
+  ((CH>=1 && CH<=${#CARTS[@]})) || continue
+
+  SEL="${CARTS[$((CH-1))]}"
+  REPO="${SEL%%|*}"
+  CART="${SEL#*|}"
+  NAME="$(basename "$REPO")"
+
+  # ---- publish run intent ----
+  cat > "$BUS/run.json" <<R
+{
+  "run": "$(basename "$CART")",
+  "repo": "$REPO",
+  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+}
+R
+
+  echo
+  echo "▶ RUN $CART"
+  cd "$REPO"
+
+  rm -f .git/index.lock 2>/dev/null || true
+  chmod +x "$CART" 2>/dev/null || true
+
+  case "$CART" in
+    *.sh) "$CART" >> "$LOGS/$NAME.log" 2>&1 || true ;;
+    *.py) python "$CART" >> "$LOGS/$NAME.log" 2>&1 || true ;;
+  esac
+
+  git add -A
+  if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
+    git commit -m "∞ C13b0² initial [$DATE]" >/dev/null 2>&1 || true
+  elif [[ -n "$(git status --porcelain)" ]]; then
+    git commit -m "∞ C13b0² update [$DATE]" >/dev/null 2>&1 || true
+  fi
+
+  git push origin HEAD >/dev/null 2>&1 || true
+
+  read -p "Press ENTER to continue…"
+done

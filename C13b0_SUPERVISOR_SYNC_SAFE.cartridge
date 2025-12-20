@@ -1,0 +1,50 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+
+echo "∞ C13b0 SUPERVISOR SYNC SAFE BOOT"
+
+ROOT="$HOME/o/mongoose.os"
+LOGS="$HOME/.c13b0_logs"
+STATE="$HOME/.c13b0_state"
+LOCK="$STATE/git.lock"
+
+CYCLE_SECONDS=30
+
+mkdir -p "$LOGS" "$STATE"
+
+ts(){ date -Is; }
+log(){ echo "[$(ts)] $*" | tee -a "$LOGS/supervisor_sync.log"; }
+
+run(){
+  local cart="$1"
+  log "RUN $cart"
+  (
+    cd "$ROOT" || exit 0
+    python "$cart"
+  ) >> "$LOGS/mongoose.os.log" 2>&1
+}
+
+push(){
+  [ -f "$LOCK" ] && return
+  touch "$LOCK"
+  (
+    cd "$ROOT" || exit 0
+    if git status --porcelain | grep -q .; then
+      git add -A
+      git commit -m "c13b0:sync $(ts)" || true
+      git push || true
+      log "PUSHED mongoose.os"
+    fi
+  ) >> "$LOGS/git.log" 2>&1
+  rm -f "$LOCK"
+}
+
+while true; do
+  log "SYNC CYCLE START"
+  run cart1015_sync_tokens.py
+  run cart1016_sync_ledger.py
+  run cart1017_sync_runner.py
+  push
+  log "SYNC CYCLE COMPLETE"
+  sleep "$CYCLE_SECONDS"
+done

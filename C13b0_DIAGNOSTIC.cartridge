@@ -1,0 +1,95 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -u
+
+echo "===== C13b0 DIAGNOSTIC BOOT ====="
+echo "HOME=$HOME"
+echo
+
+# -------------------------------------------------
+# 1. Locate mongoose.os
+# -------------------------------------------------
+echo "[1] Searching for mongoose.os …"
+BRAIN_GIT=$(find "$HOME" -type d -name ".git" 2>/dev/null | grep "/mongoose\.os/\.git" | head -n 1 || true)
+
+if [ -z "$BRAIN_GIT" ]; then
+  echo "❌ mongoose.os NOT FOUND"
+  exit 1
+fi
+
+BRAIN_REPO="$(dirname "$BRAIN_GIT")"
+REPOS_ROOT="$(dirname "$BRAIN_REPO")"
+
+echo "✓ mongoose.os found at:"
+echo "  $BRAIN_REPO"
+echo
+echo "Repos root inferred as:"
+echo "  $REPOS_ROOT"
+echo
+
+# -------------------------------------------------
+# 2. List repos
+# -------------------------------------------------
+echo "[2] Listing git repos under repos root:"
+REPOS=()
+for d in "$REPOS_ROOT"/*; do
+  if [ -d "$d/.git" ]; then
+    echo "  ✓ $(basename "$d")"
+    REPOS+=("$d")
+  fi
+done
+
+if [ "${#REPOS[@]}" -eq 0 ]; then
+  echo "❌ NO git repos found under repos root"
+  exit 1
+fi
+echo
+
+# -------------------------------------------------
+# 3. List carts
+# -------------------------------------------------
+echo "[3] Searching for carts (cart*.sh / cart*.py)…"
+CARTS=()
+for r in "${REPOS[@]}"; do
+  find "$r" -type f \( -name "cart*.sh" -o -name "cart*.py" \) 2>/dev/null | while read -r c; do
+    echo "  ✓ $(basename "$c")  (repo: $(basename "$r"))"
+    CARTS+=("$c")
+  done
+done
+
+if [ "${#CARTS[@]}" -eq 0 ]; then
+  echo "❌ NO carts found"
+  exit 1
+fi
+echo
+
+# -------------------------------------------------
+# 4. Run ONE cart (first found)
+# -------------------------------------------------
+CART="${CARTS[0]}"
+REPO="$(dirname "$CART")"
+
+echo "[4] Running first cart found:"
+echo "  CART = $CART"
+echo "  REPO = $REPO"
+echo
+
+cd "$REPO" || { echo "❌ Failed to cd into repo"; exit 1; }
+
+echo "---- CART STDOUT / STDERR ----"
+chmod +x "$CART" 2>/dev/null || true
+
+case "$CART" in
+  *.sh)
+    bash "$CART"
+    ;;
+  *.py)
+    python "$CART"
+    ;;
+  *)
+    echo "❌ Unknown cart type"
+    ;;
+esac
+
+echo "---- END CART OUTPUT ----"
+echo
+echo "===== DIAGNOSTIC COMPLETE ====="

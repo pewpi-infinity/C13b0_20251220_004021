@@ -1,0 +1,104 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+
+echo "∞ C13b0 SUPERVISOR (PUSH-EACH) BOOT"
+
+ROOT="$HOME/o"
+STATE="$HOME/.c13b0_state"
+BUS="$HOME/.c13b0_bus"
+LOGS="$HOME/.c13b0_logs"
+CYCLE_SECONDS=15
+
+mkdir -p "$STATE" "$BUS" "$LOGS"
+
+# ---- validate ----
+[ -d "$ROOT/mongoose.os/.git" ] || { echo "❌ mongoose.os missing under ~/o"; exit 1; }
+
+ts(){ date -Is; }
+log(){ echo "[$(ts)] $*" | tee -a "$LOGS/supervisor.log"; }
+
+run_cart(){
+  local repo="$1"
+  local cart="$2"
+  local cycle="$3"
+
+  log "RUN $(basename "$cart") @ $(basename "$repo")"
+
+  (
+    cd "$repo" || exit 0
+    chmod +x "$cart" 2>/dev/null || true
+    case "$cart" in
+      *.sh) bash "$cart" ;;
+      *.py) python "$cart" ;;
+    esac
+  ) >> "$LOGS/$(basename "$repo").log" 2>&1 || true
+
+  # ---- immediate git push for this repo ----
+  (
+    cd "$repo" || exit 0
+    if git status --porcelain | grep -q .; then
+      git add -A
+      git commit -m "c13b0:auto cycle=$cycle cart=$(basename "$cart")" || true
+      git push || true
+      log "PUSHED $(basename "$repo")"
+    fi
+  ) >> "$LOGS/git.log" 2>&1 || true
+}
+
+emit(){
+  printf '{"ts":"%s","event":"%s","data":%s}\n' \
+    "$(ts)" "$1" "${2:-null}" \
+    > "$BUS/$(date +%s%N)_$1.json"
+}
+
+# ---- discover repos ----
+mapfile -t REPOS < <(find "$ROOT" -maxdepth 1 -type d -exec test -d "{}/.git" \; -print)
+
+# ---- discover carts ----
+declare -a CARTS=()
+for r in "${REPOS[@]}"; do
+  while IFS= read -r c; do CARTS+=("$r|$c"); done \
+    < <(find "$r" -type f \( -name "cart*.sh" -o -name "cart*.py" \))
+done
+
+log "DISCOVERED repos=${#REPOS[@]} carts=${#CARTS[@]}"
+
+# ---- watcher (non-blocking) ----
+if ! pgrep -f c13b0_watcher >/dev/null 2>&1; then
+  (
+    while true; do
+      emit heartbeat '{}'
+      sleep 10
+    done
+  ) >/dev/null 2>&1 &
+  disown
+  log "WATCHER started"
+fi
+
+# ---- supervisor loop ----
+CYCLE=0
+while true; do
+  CYCLE=$((CYCLE+1))
+  log "CYCLE $CYCLE"
+
+  # intent handling
+  for ev in "$BUS"/*.json; do
+    [ -e "$ev" ] || break
+    type=$(jq -r .event "$ev" 2>/dev/null || echo "")
+    data=$(jq -c .data "$ev" 2>/dev/null || echo "{}")
+    rm -f "$ev"
+
+    if [ "$type" = "intent:run" ]; then
+      repo="$ROOT/$(jq -r .repo <<<"$data")"
+      cart="$repo/$(jq -r .cart <<<"$data")"
+      [ -f "$cart" ] && run_cart "$repo" "$cart" "$CYCLE"
+    fi
+  done
+
+  # round-robin fire
+  idx=$(( (CYCLE-1) % ${#CARTS[@]} ))
+  IFS='|' read -r repo cart <<<"${CARTS[$idx]}"
+  run_cart "$repo" "$cart" "$CYCLE"
+
+  sleep "$CYCLE_SECONDS"
+done

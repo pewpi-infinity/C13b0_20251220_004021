@@ -1,0 +1,67 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -u
+
+echo "∞ C13b0 PEWPI-LOCKED BOOT"
+
+ROOT="$HOME/pewpi-infinity"
+LOGS="$HOME/.c13b0_logs"
+mkdir -p "$LOGS"
+
+# ---- validate root ----
+if [ ! -d "$ROOT" ]; then
+  echo "❌ pewpi-infinity root not found at:"
+  echo "  $ROOT"
+  exit 1
+fi
+
+if [ ! -d "$ROOT/mongoose.os/.git" ]; then
+  echo "❌ mongoose.os not found under pewpi-infinity"
+  exit 1
+fi
+
+echo "✓ ROOT LOCKED:"
+echo "  $ROOT"
+echo
+
+# ---- discover repos ----
+REPOS=()
+for d in "$ROOT"/*; do
+  [ -d "$d/.git" ] && REPOS+=("$d")
+done
+
+echo "✓ ${#REPOS[@]} repos discovered"
+echo
+
+# ---- discover carts ----
+CARTS=()
+for r in "${REPOS[@]}"; do
+  while IFS= read -r c; do
+    CARTS+=("$r|$c")
+  done < <(find "$r" -type f \( -name "cart*.sh" -o -name "cart*.py" \))
+done
+
+[ "${#CARTS[@]}" -eq 0 ] && { echo "❌ no carts found"; exit 1; }
+
+echo "✓ ${#CARTS[@]} carts discovered"
+echo
+
+# ---- run carts ----
+for item in "${CARTS[@]}"; do
+  REPO="${item%%|*}"
+  CART="${item#*|}"
+
+  echo "▶ RUN $(basename "$CART")"
+  echo "  repo = $REPO"
+  echo "  file = $CART"
+
+  cd "$REPO" || continue
+  chmod +x "$CART" 2>/dev/null || true
+
+  case "$CART" in
+    *.sh) bash "$CART" >> "$LOGS/$(basename "$REPO").log" 2>&1 || true ;;
+    *.py) python "$CART" >> "$LOGS/$(basename "$REPO").log" 2>&1 || true ;;
+  esac
+done
+
+echo
+echo "∞ PEWPI SYSTEM LAUNCHED ∞"
